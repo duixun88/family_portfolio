@@ -25,7 +25,7 @@ export async function GET(request: NextRequest) {
   }
 
   const tickers = tickersParam.split(',').map(t => t.trim()).filter(Boolean);
-  const allTickers = [...new Set([...tickers, 'USDKRW=X'])];
+  const allTickers = Array.from(new Set([...tickers, 'USDKRW=X']));
 
   const results: Record<string, { price: number; currency: string; date: string; name: string }> = {};
 
