@@ -7,7 +7,9 @@ import {
   ChevronDown, ChevronRight, AlertCircle,
   TrendingUp, TrendingDown, BarChart2, Info,
   Sun, Moon, ArrowUp, ArrowDown, ArrowUpDown,
+  Cloud, CloudOff,
 } from 'lucide-react';
+import { isCloudEnabled, loadFromCloud, saveToCloud } from '@/lib/sync';
 import { Account, Holding, Owner, AccountType, AssetType, PriceMap, ActiveView } from '@/lib/types';
 import { ACCOUNT_META } from '@/lib/accountMeta';
 import { storage } from '@/lib/storage';
@@ -103,21 +105,61 @@ export default function PortfolioApp() {
   const [accountForm,      setAccountForm]      = useState(defAccount());
   const [holdingForm,      setHoldingForm]      = useState(defHolding());
   const [infoAccountId,    setInfoAccountId]    = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'synced' | 'error'>('idle');
+
+  // Refs: always hold latest state for debounced cloud sync
+  const syncTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdingsRef   = useRef<Holding[]>([]);
+  const accountsRef   = useRef<Account[]>([]);
+  const pricesRef     = useRef<PriceMap>({});
+  const fxRateRef     = useRef<number>(1380);
+
+  // Keep refs in sync with state (runs on every render, before effects)
+  holdingsRef.current = holdings;
+  accountsRef.current = accounts;
+  pricesRef.current   = prices;
+  fxRateRef.current   = fxRate;
 
   // ── init ──────────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    setHoldings(storage.loadHoldings());
-    setAccounts(storage.loadAccounts());
-    setPrices(storage.loadPrices());
-    setFxRate(storage.loadFxRate());
+    // 1. localStorage에서 즉시 로드 (화면 빠르게 표시)
+    const localH  = storage.loadHoldings();
+    const localA  = storage.loadAccounts();
+    const localP  = storage.loadPrices();
+    const localFx = storage.loadFxRate();
+    setHoldings(localH);
+    setAccounts(localA);
+    setPrices(localP);
+    setFxRate(localFx);
 
+    // 테마 로드
     const savedTheme = localStorage.getItem('fp:theme');
-    const dark = savedTheme !== 'light'; // default dark
+    const dark = savedTheme !== 'light';
     setIsDark(dark);
     document.documentElement.classList.toggle('dark', dark);
-
     setLoaded(true);
+
+    // 2. 클라우드에서 최신 데이터 로드 (백그라운드)
+    if (isCloudEnabled) {
+      setSyncStatus('syncing');
+      loadFromCloud().then(cloudData => {
+        if (cloudData) {
+          setHoldings(cloudData.holdings);
+          setAccounts(cloudData.accounts);
+          if (cloudData.prices && Object.keys(cloudData.prices).length > 0) setPrices(cloudData.prices);
+          if (cloudData.fxRate) setFxRate(cloudData.fxRate);
+          // localStorage도 업데이트
+          storage.saveHoldings(cloudData.holdings);
+          storage.saveAccounts(cloudData.accounts);
+          if (cloudData.prices) storage.savePrices(cloudData.prices);
+          if (cloudData.fxRate) storage.saveFxRate(cloudData.fxRate);
+          setSyncStatus('synced');
+        } else {
+          setSyncStatus('error');
+        }
+      });
+    }
   }, []);
 
   // ── theme toggle ──────────────────────────────────────────────────────────────
@@ -131,15 +173,36 @@ export default function PortfolioApp() {
     });
   }, []);
 
+  // ── cloud sync (debounced 2s) ─────────────────────────────────────────────────
+
+  const triggerCloudSync = useCallback(() => {
+    if (!isCloudEnabled) return;
+    setSyncStatus('syncing');
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+    syncTimerRef.current = setTimeout(async () => {
+      const ok = await saveToCloud({
+        holdings: holdingsRef.current,
+        accounts: accountsRef.current,
+        prices:   pricesRef.current,
+        fxRate:   fxRateRef.current,
+      });
+      setSyncStatus(ok ? 'synced' : 'error');
+    }, 2000);
+  }, []);
+
   // ── save helpers ──────────────────────────────────────────────────────────────
 
   const saveHoldings = useCallback((next: Holding[]) => {
+    holdingsRef.current = next;
     setHoldings(next); storage.saveHoldings(next);
-  }, []);
+    triggerCloudSync();
+  }, [triggerCloudSync]);
 
   const saveAccounts = useCallback((next: Account[]) => {
+    accountsRef.current = next;
     setAccounts(next); storage.saveAccounts(next);
-  }, []);
+    triggerCloudSync();
+  }, [triggerCloudSync]);
 
   // ── value calc ────────────────────────────────────────────────────────────────
 
@@ -197,14 +260,16 @@ export default function PortfolioApp() {
         log.push(`USD/KRW: ${data.usdkrw.toFixed(2)}`);
       }
       log.push(`완료 ${new Date().toLocaleTimeString('ko-KR')}`);
+      pricesRef.current = newPrices;
       setPrices(newPrices);
       storage.savePrices(newPrices);
       setRefreshLog(log);
+      triggerCloudSync();
     } catch (e: any) {
       setRefreshLog([`오류: ${e.message}`]);
     }
     setRefreshing(false);
-  }, [holdings, prices]);
+  }, [holdings, prices, triggerCloudSync]);
 
   // ── account CRUD ──────────────────────────────────────────────────────────────
 
@@ -311,14 +376,15 @@ export default function PortfolioApp() {
         if (d.holdings) saveHoldings(d.holdings);
         if (d.accounts) saveAccounts(d.accounts);
         if (d.prices)   { setPrices(d.prices); storage.savePrices(d.prices); }
-        if (d.fxRate)   { setFxRate(d.fxRate); storage.saveFxRate(d.fxRate); }
+        if (d.fxRate)   { fxRateRef.current = d.fxRate; setFxRate(d.fxRate); storage.saveFxRate(d.fxRate); }
         setStatusMsg('가져오기 완료');
         setTimeout(() => setStatusMsg(''), 3000);
+        triggerCloudSync();
       } catch { setStatusMsg('파일 형식 오류'); }
     };
     reader.readAsText(file);
     e.target.value = '';
-  }, [saveHoldings, saveAccounts]);
+  }, [saveHoldings, saveAccounts, triggerCloudSync]);
 
   // ── computed ──────────────────────────────────────────────────────────────────
 
@@ -376,8 +442,23 @@ export default function PortfolioApp() {
       <div className="border-b border-orange-400/40 dark:border-orange-500/30 bg-white dark:bg-black px-4 py-3 flex items-center justify-between flex-shrink-0">
         <div>
           <h1 className="text-lg font-bold text-orange-500 dark:text-orange-400 tracking-wider">FAMILY PORTFOLIO</h1>
-          <div className="text-[10px] text-slate-400 dark:text-gray-600">
-            v4.1 · Yahoo Finance · {new Date().toLocaleString('ko-KR')}
+          <div className="flex items-center gap-2 text-[10px] text-slate-400 dark:text-gray-600">
+            <span>v4.2 · Yahoo Finance · {new Date().toLocaleString('ko-KR')}</span>
+            {isCloudEnabled && (
+              <span className={`flex items-center gap-1 ${
+                syncStatus === 'synced'  ? 'text-green-500 dark:text-green-400' :
+                syncStatus === 'error'   ? 'text-red-500 dark:text-red-400' :
+                syncStatus === 'syncing' ? 'text-orange-500 dark:text-orange-400' :
+                'text-slate-300 dark:text-gray-700'
+              }`}>
+                {syncStatus === 'error'
+                  ? <CloudOff size={10} />
+                  : <Cloud size={10} className={syncStatus === 'syncing' ? 'animate-pulse' : ''} />}
+                {syncStatus === 'syncing' ? '동기화 중' :
+                 syncStatus === 'synced'  ? '동기화 완료' :
+                 syncStatus === 'error'   ? '동기화 오류' : ''}
+              </span>
+            )}
           </div>
         </div>
         <div className="flex gap-2 flex-wrap justify-end">
