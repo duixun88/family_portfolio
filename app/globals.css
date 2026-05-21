@@ -2,21 +2,39 @@
 @tailwind components;
 @tailwind utilities;
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
+  background: #f1f5f9;
+  color: #0f172a;
+  font-family: 'Courier New', monospace;
+}
+.dark body {
   background: #000;
   color: #e5e7eb;
-  font-family: 'Courier New', monospace;
+}
+
+/* Smooth theme transition */
+*, *::before, *::after {
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.1s ease;
 }
 
 /* Scrollbar */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: #111; }
-::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
+::-webkit-scrollbar-track { background: #f1f5f9; }
+.dark ::-webkit-scrollbar-track { background: #111; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 2px; }
+.dark ::-webkit-scrollbar-thumb { background: #374151; border-radius: 2px; }
 
-/* Table inputs */
+/* Remove number input spinners */
 input[type='number']::-webkit-inner-spin-button,
 input[type='number']::-webkit-outer-spin-button { -webkit-appearance: none; }
+
+/* Recharts SVG text theming */
+.recharts-cartesian-axis-tick-value { fill: #64748b; }
+.dark .recharts-cartesian-axis-tick-value { fill: #9ca3af; }
+
+.recharts-label-list text { fill: #475569; font-size: 10px; }
+.dark .recharts-label-list text { fill: #9ca3af; }
+
+.recharts-tooltip-wrapper { outline: none; }
